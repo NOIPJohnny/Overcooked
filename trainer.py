@@ -4,12 +4,18 @@ import gym
 
 import torch as th
 
-from stable_baselines3 import PPO
+from stable_baselines3 import A2C, DQN, PPO, SAC
+from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.monitor import Monitor
 
 from pantheonrl.common.wrappers import frame_wrap, recorder_wrap
-from pantheonrl.common.agents import OnPolicyAgent, StaticPolicyAgent
+from pantheonrl.common.agents import (OffPolicyAgent, OnPolicyAgent,
+                                      StaticModelAgent, StaticPolicyAgent)
+from pantheonrl.common.evaluation import (PeriodicEvalCallback,
+                                          TensorboardScalarFilterCallback,
+                                          filter_tensorboard_scalars)
+from pantheonrl.common.progress import TqdmProgressCallback
 
 from pantheonrl.algos.adap.adap_learn import ADAP
 from pantheonrl.algos.adap.policies import AdapPolicyMult, AdapPolicy
@@ -30,8 +36,10 @@ ENV_LIST = ['RPS-v0', 'BlockEnv-v0', 'BlockEnv-v1', 'LiarsDice-v0',
             'OvercookedMultiEnv-v0']
 
 ADAP_TYPES = ['ADAP', 'ADAP_MULT']
-EGO_LIST = ['PPO', 'ModularAlgorithm', 'LOAD'] + ADAP_TYPES
-PARTNER_LIST = ['PPO', 'DEFAULT', 'FIXED'] + ADAP_TYPES
+ON_POLICY_TYPES = ['PPO', 'A2C']
+OFF_POLICY_TYPES = ['DQN', 'SAC']
+EGO_LIST = ON_POLICY_TYPES + ['ModularAlgorithm', 'LOAD'] + ADAP_TYPES + OFF_POLICY_TYPES
+PARTNER_LIST = ON_POLICY_TYPES + ['DEFAULT', 'FIXED'] + ADAP_TYPES + OFF_POLICY_TYPES
 
 
 class EnvException(Exception):
@@ -124,6 +132,13 @@ def generate_ego(env, args):
         return model
     elif args.ego == 'PPO':
         return PPO(policy='MlpPolicy', **kwargs)
+    elif args.ego == 'A2C':
+        return A2C(policy='MlpPolicy', **kwargs)
+    elif args.ego == 'DQN':
+        return DQN(policy='MlpPolicy', **kwargs)
+    elif args.ego == 'SAC':
+        check_sac_action_space(env)
+        return SAC(policy='MlpPolicy', **kwargs)
     elif args.ego == 'ADAP':
         return ADAP(policy=AdapPolicy, **kwargs)
     elif args.ego == 'ADAP_MULT':
@@ -147,6 +162,12 @@ def gen_load(config, policy_type, location):
         agent.policy.set_context(latent_val)
     elif policy_type == 'PPO':
         agent = PPO.load(location)
+    elif policy_type == 'A2C':
+        agent = A2C.load(location)
+    elif policy_type == 'DQN':
+        agent = DQN.load(location)
+    elif policy_type == 'SAC':
+        agent = SAC.load(location)
     elif policy_type == 'ModularAlgorithm':
         agent = ModularAlgorithm.load(location)
     elif policy_type == 'BC':
@@ -159,7 +180,17 @@ def gen_load(config, policy_type, location):
 
 def gen_fixed(config, policy_type, location):
     agent = gen_load(config, policy_type, location)
+    if hasattr(agent, 'predict'):
+        return StaticModelAgent(agent)
     return StaticPolicyAgent(agent.policy)
+
+
+def check_sac_action_space(env):
+    if not isinstance(env.action_space, gym.spaces.Box):
+        raise EnvException(
+            "SB3 SAC requires a continuous Box action space; "
+            f"{env.action_space} is not supported. Use DQN for Overcooked."
+        )
 
 
 def gen_default(config, altenv):
@@ -201,6 +232,13 @@ def gen_partner(type, config, altenv, ego, args):
 
     if type == 'PPO':
         return OnPolicyAgent(PPO(policy='MlpPolicy', **config), **agentarg)
+    elif type == 'A2C':
+        return OnPolicyAgent(A2C(policy='MlpPolicy', **config), **agentarg)
+    elif type == 'DQN':
+        return OffPolicyAgent(DQN(policy='MlpPolicy', **config), **agentarg)
+    elif type == 'SAC':
+        check_sac_action_space(altenv)
+        return OffPolicyAgent(SAC(policy='MlpPolicy', **config), **agentarg)
 
     if type == 'ADAP':
         alt = ADAP(policy=AdapPolicy, **config)
@@ -287,8 +325,8 @@ if __name__ == '__main__':
             From the perspective of the ego agent, the environment functions
             like a regular gym environment.
 
-            Supported ego-agent algorithms include PPO, ModularAlgorithm, ADAP,
-            and ADAP_MULT. The default parameters of these algorithms can
+            Supported ego-agent algorithms include PPO, A2C, ModularAlgorithm,
+            ADAP, and ADAP_MULT. The default parameters of these algorithms can
             be overriden using --ego-config.
 
             Alt-Agents:
@@ -297,7 +335,7 @@ if __name__ == '__main__':
             environment. If multiple are listed, the environment randomly
             samples one of them to be the partner at the start of each episode.
 
-            Supported alt-agent algorithms include PPO, ADAP, ADAP_MULT,
+            Supported alt-agent algorithms include PPO, A2C, ADAP, ADAP_MULT,
             DEFAULT, and FIXED. DEFAULT refers to the default hand-made policy
             in the environment (if it exists). FIXED refers to a policy that
             has already been saved to a file, and will not learn anymore.
@@ -389,6 +427,22 @@ if __name__ == '__main__':
                         action='store_true',
                         help='True when partners should log to output')
 
+    parser.add_argument('--eval-freq',
+                        type=int,
+                        default=0,
+                        help='Run evaluation every N ego timesteps')
+
+    parser.add_argument('--eval-episodes',
+                        type=int,
+                        default=5,
+                        help='Number of episodes per evaluation partner')
+
+    parser.add_argument('--best-ego-save',
+                        help='File to save the best evaluated ego agent into')
+
+    parser.add_argument('--best-alt-save',
+                        help='File to save the best evaluated partner agent into')
+
     parser.add_argument('--preset', type=int, help='Use preset args')
 
     args = parser.parse_args()
@@ -406,10 +460,35 @@ if __name__ == '__main__':
     ego = generate_ego(env, args)
     print(f'Ego: {ego}')
     partners = generate_partners(altenv, env, ego, args)
+    for partner in partners:
+        if hasattr(partner, 'model') and getattr(partner.model, 'logger', None) is not None:
+            filter_tensorboard_scalars(partner.model.logger)
 
     learn_config = {'total_timesteps': args.total_timesteps}
     if args.tensorboard_log:
         learn_config['tb_log_name'] = args.tensorboard_name
+    callbacks = [
+        TensorboardScalarFilterCallback(),
+        TqdmProgressCallback(args.total_timesteps),
+    ]
+    if args.eval_freq > 0:
+        best_ego_save = args.best_ego_save or (
+            f"{args.ego_save}-best" if args.ego_save else None)
+        best_alt_save = args.best_alt_save or (
+            f"{args.alt_save}-best" if args.alt_save else None)
+        callbacks.append(
+            PeriodicEvalCallback(
+                args.env,
+                args.env_config,
+                partners,
+                args.eval_episodes,
+                args.eval_freq,
+                args.framestack,
+                best_ego_save,
+                best_alt_save,
+            )
+        )
+    learn_config['callback'] = CallbackList(callbacks)
     ego.learn(**learn_config)
 
     if args.record:

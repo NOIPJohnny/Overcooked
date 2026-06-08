@@ -16,6 +16,7 @@ setup(name='pantheonrl',
         'tensorboard==2.11.0',
         'stable-baselines3==1.7.0',
         'scipy==1.7.3',
-        'tqdm==4.64.1'
+        'tqdm==4.64.1',
+        'Pillow==9.5.0'
       ],
       )

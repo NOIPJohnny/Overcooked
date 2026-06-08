@@ -32,6 +32,7 @@ class OvercookedMultiEnv(SimultaneousEnv):
 
         self.base_env = OvercookedEnv(self.mdp, **DEFAULT_ENV_PARAMS)
         self.featurize_fn = lambda x: self.mdp.featurize_state(x, mlp)
+        self.last_info = {}
 
         if baselines: np.random.seed(0)
 
@@ -64,11 +65,23 @@ class OvercookedMultiEnv(SimultaneousEnv):
         else:
             joint_action = (alt_action, ego_action)
 
-        next_state, reward, done, info = self.base_env.step(joint_action)
+        next_state, sparse_reward, done, info = self.base_env.step(joint_action)
 
         # reward shaping
         rew_shape = info['shaped_r']
-        reward = reward + rew_shape
+        reward = sparse_reward + rew_shape
+        info = {
+            **info,
+            "sparse_r": sparse_reward,
+            "dense_r": reward,
+            "success": float(sparse_reward > 0),
+        }
+        if done and "episode" in info:
+            ep_sparse_r = info["episode"]["ep_sparse_r"]
+            info["episode"]["ep_dense_r"] = (
+                ep_sparse_r + info["episode"]["ep_shaped_r"])
+            info["episode"]["success"] = float(ep_sparse_r > 0)
+        self.last_info = info
 
         #print(self.base_env.mdp.state_string(next_state))
         ob_p0, ob_p1 = self.featurize_fn(next_state)
@@ -77,7 +90,7 @@ class OvercookedMultiEnv(SimultaneousEnv):
         else:
             ego_obs, alt_obs = ob_p1, ob_p0
 
-        return (ego_obs, alt_obs), (reward, reward), done, {}#info
+        return (ego_obs, alt_obs), (reward, reward), done, info
 
     def multi_reset(self):
         """
@@ -89,6 +102,7 @@ class OvercookedMultiEnv(SimultaneousEnv):
         have to deal with randomizing indices.
         """
         self.base_env.reset()
+        self.last_info = {}
         ob_p0, ob_p1 = self.featurize_fn(self.base_env.state)
         if self.ego_agent_idx == 0:
             ego_obs, alt_obs = ob_p0, ob_p1
@@ -98,4 +112,12 @@ class OvercookedMultiEnv(SimultaneousEnv):
         return (ego_obs, alt_obs)
 
     def render(self, mode='human', close=False):
-        pass
+        if close:
+            return None
+        if mode == 'rgb_array':
+            from pantheonrl.common.overcooked_render import render_state
+            return render_state(self.mdp, self.base_env.state)
+        if mode == 'human':
+            print(self.base_env.mdp.state_string(self.base_env.state))
+            return None
+        raise ValueError(f"Unsupported render mode: {mode}")

@@ -79,6 +79,24 @@ class StaticPolicyAgent(Agent):
         pass
 
 
+class StaticModelAgent(Agent):
+    """
+    Agent representing a static SB3 model.
+
+    :param model: Model with a predict method.
+    """
+
+    def __init__(self, model):
+        self.model = model
+
+    def get_action(self, obs: Observation, record: bool = True) -> np.ndarray:
+        action, _ = self.model.predict(obs.obs, deterministic=True)
+        return np.asarray(action).reshape(-1)[0]
+
+    def update(self, reward: float, done: bool) -> None:
+        pass
+
+
 class OnPolicyAgent(Agent):
     """
     Agent representing an on-policy learning algorithm (ex: A2C/PPO).
@@ -262,7 +280,7 @@ class OffPolicyAgent(Agent):
                 buf.observations[buf.pos] = np.array(obs).copy()
                 self.model._store_transition(
                     buf, self.old_buffer_action, obs, self.old_reward,
-                    self.old_done, [self.old_info])
+                    [self.old_done], [self.old_info])
 
             if self.old_done:
                 self.num_collected_episodes += 1
@@ -343,6 +361,10 @@ class OffPolicyAgent(Agent):
         if should_collect_more_steps(self.model.train_freq,
                                      self.num_collected_steps,
                                      self.num_collected_episodes):
+            return
+        if self.model.num_timesteps < self.model.learning_starts:
+            return
+        if self.model.replay_buffer.size() == 0:
             return
 
         gradient_steps = self.model.gradient_steps

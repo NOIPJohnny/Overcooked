@@ -5,10 +5,11 @@ from time import sleep
 import numpy as np
 
 from trainer import (generate_env, gen_fixed, gen_default, EnvException,
-                     ENV_LIST, ADAP_TYPES, LAYOUT_LIST)
+                     ENV_LIST, ADAP_TYPES, LAYOUT_LIST, ON_POLICY_TYPES,
+                     OFF_POLICY_TYPES)
 
-EGO_LIST = ['PPO', 'ModularAlgorithm', 'BC'] + ADAP_TYPES
-PARTNER_LIST = ['PPO', 'DEFAULT', 'BC'] + ADAP_TYPES
+EGO_LIST = ON_POLICY_TYPES + ['ModularAlgorithm', 'BC'] + ADAP_TYPES + OFF_POLICY_TYPES
+PARTNER_LIST = ON_POLICY_TYPES + ['DEFAULT', 'BC'] + ADAP_TYPES + OFF_POLICY_TYPES
 
 
 def input_check(args):
@@ -41,26 +42,40 @@ def generate_agent(env, policy_type, config, location):
 def run_test(ego, env, num_episodes, render=False):
     env.set_ego_extractor(lambda obs: obs)
     rewards = []
+    sparse_rewards = []
+    successes = []
     for game in range(num_episodes):
         obs = env.reset()
         done = False
         reward = 0
+        sparse_reward = 0
+        success = 0
         if render:
             env.render()
         while not done:
             action = ego.get_action(obs, False)
-            obs, newreward, done, _ = env.step(action)
+            obs, newreward, done, info = env.step(action)
             reward += newreward
+            sparse_reward += info.get("sparse_r", 0)
+            success = max(success, info.get("success", 0))
 
             if render:
                 env.render()
                 sleep(1/60)
 
+        if info.get("episode"):
+            sparse_reward = info["episode"].get("ep_sparse_r", sparse_reward)
+            success = info["episode"].get("success", success)
         rewards.append(reward)
+        sparse_rewards.append(sparse_reward)
+        successes.append(success)
 
     env.close()
-    print(f"Average Reward: {sum(rewards)/num_episodes}")
-    print(f"Standard Deviation: {np.std(rewards)}")
+    print(f"Average Dense Reward: {sum(rewards)/num_episodes}")
+    print(f"Dense Reward Standard Deviation: {np.std(rewards)}")
+    print(f"Average Sparse Reward: {sum(sparse_rewards)/num_episodes}")
+    print(f"Sparse Reward Standard Deviation: {np.std(sparse_rewards)}")
+    print(f"Success Rate: {sum(successes)/num_episodes}")
 
 
 if __name__ == '__main__':
@@ -94,8 +109,8 @@ if __name__ == '__main__':
             From the perspective of the ego agent, the environment functions
             like a regular gym environment.
 
-            Supported ego-agent algorithms include PPO, ModularAlgorithm, ADAP,
-            and ADAP_MULT. The default parameters of these algorithms can
+            Supported ego-agent algorithms include PPO, A2C, ModularAlgorithm,
+            ADAP, and ADAP_MULT. The default parameters of these algorithms can
             be overriden using --ego-config.
 
             Alt-Agent:
@@ -104,7 +119,7 @@ if __name__ == '__main__':
             environment. If multiple are listed, the environment randomly
             samples one of them to be the partner at the start of each episode.
 
-            Supported alt-agent algorithms include PPO, ADAP, ADAP_MULT,
+            Supported alt-agent algorithms include PPO, A2C, ADAP, ADAP_MULT,
             and DEFAULT. DEFAULT refers to the default hand-made policy
             in the environment (if it exists).
 
