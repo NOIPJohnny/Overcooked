@@ -100,6 +100,21 @@ def plan_to_interact(mdp, pos, orientation, terrain_pos, blocked):
     return actions, pos, orientation
 
 
+def advance_motion(pos, orientation, actions):
+    for action in actions:
+        pos = (pos[0] + action[0], pos[1] + action[1])
+        orientation = action
+    return pos, orientation
+
+
+def plan_motion_to(mdp, pos, orientation, target_pos, blocked):
+    path, _ = shortest_path(mdp, pos, [target_pos], blocked)
+    if path is None:
+        raise RuntimeError(f"No path from {pos} to parking {target_pos}")
+    pos, orientation = advance_motion(pos, orientation, path)
+    return path, pos, orientation
+
+
 def build_active_plan(mdp, active_start, active_orientation, pot_pos, blocked):
     pos = active_start
     orientation = active_orientation
@@ -142,6 +157,109 @@ def build_active_plan(mdp, active_start, active_orientation, pot_pos, blocked):
     )
     add_interaction(serving_pos)
     return actions
+
+
+def build_fill_plan(mdp, start_pos, start_orientation, pot_pos, blocked):
+    pos = start_pos
+    orientation = start_orientation
+    actions = []
+
+    def add_interaction(terrain_pos):
+        nonlocal pos, orientation, actions
+        new_actions, pos, orientation = plan_to_interact(
+            mdp, pos, orientation, terrain_pos, blocked)
+        actions.extend(new_actions)
+
+    for _ in range(mdp.num_items_for_soup):
+        best_onion = None
+        for onion_pos in mdp.terrain_pos_dict["O"]:
+            try:
+                onion_actions, _, _ = plan_to_interact(
+                    mdp, pos, orientation, onion_pos, blocked)
+            except RuntimeError:
+                continue
+            candidate = (len(onion_actions), onion_pos)
+            if best_onion is None or candidate < best_onion:
+                best_onion = candidate
+        if best_onion is None:
+            raise RuntimeError("No reachable onion dispenser")
+        add_interaction(best_onion[1])
+        add_interaction(pot_pos)
+    return actions, pos, orientation
+
+
+def build_serve_plan(mdp, start_pos, start_orientation, pot_pos, blocked):
+    pos = start_pos
+    orientation = start_orientation
+    actions = []
+
+    def add_interaction(terrain_pos):
+        nonlocal pos, orientation, actions
+        new_actions, pos, orientation = plan_to_interact(
+            mdp, pos, orientation, terrain_pos, blocked)
+        actions.extend(new_actions)
+
+    dish_pos = min(
+        mdp.terrain_pos_dict["D"],
+        key=lambda p: len(plan_to_interact(mdp, pos, orientation, p, blocked)[0]),
+    )
+    add_interaction(dish_pos)
+    add_interaction(pot_pos)
+
+    serving_pos = min(
+        mdp.terrain_pos_dict["S"],
+        key=lambda p: len(plan_to_interact(mdp, pos, orientation, p, blocked)[0]),
+    )
+    add_interaction(serving_pos)
+    return actions, pos, orientation
+
+
+def cooperative_joint_actions(mdp, cook_idx, pot_pos, server_parking,
+                              cook_parking):
+    start_state = mdp.get_standard_start_state()
+    serve_idx = 1 - cook_idx
+    cook_pos = start_state.players[cook_idx].position
+    cook_orientation = start_state.players[cook_idx].orientation
+    serve_pos = start_state.players[serve_idx].position
+    serve_orientation = start_state.players[serve_idx].orientation
+
+    joint_actions = []
+    if server_parking is not None and server_parking != serve_pos:
+        serve_actions, serve_pos, serve_orientation = plan_motion_to(
+            mdp, serve_pos, serve_orientation, server_parking,
+            blocked={cook_pos})
+        for action in serve_actions:
+            joint = [Action.STAY, Action.STAY]
+            joint[serve_idx] = action
+            joint_actions.append(tuple(joint))
+
+    fill_actions, cook_pos, cook_orientation = build_fill_plan(
+        mdp, cook_pos, cook_orientation, pot_pos, blocked={serve_pos})
+    for action in fill_actions:
+        joint = [Action.STAY, Action.STAY]
+        joint[cook_idx] = action
+        joint_actions.append(tuple(joint))
+
+    if cook_parking is not None and cook_parking != cook_pos:
+        cook_actions, cook_pos, cook_orientation = plan_motion_to(
+            mdp, cook_pos, cook_orientation, cook_parking,
+            blocked={serve_pos})
+        for action in cook_actions:
+            joint = [Action.STAY, Action.STAY]
+            joint[cook_idx] = action
+            joint_actions.append(tuple(joint))
+
+    for _ in range(mdp.soup_cooking_time + 2):
+        joint_actions.append((Action.STAY, Action.STAY))
+
+    serve_actions, _, _ = build_serve_plan(
+        mdp, serve_pos, serve_orientation, pot_pos, blocked={cook_pos})
+    for action in serve_actions:
+        joint = [Action.STAY, Action.STAY]
+        joint[serve_idx] = action
+        joint_actions.append(tuple(joint))
+
+    return joint_actions
 
 
 def candidate_joint_actions(mdp, active_idx, pot_pos, parking_pos):
@@ -208,9 +326,35 @@ def rollout_joint_actions(env, joint_actions):
 def find_demonstration(env):
     mdp = env.mdp
     parking_options = [None] + list(mdp.get_valid_player_positions())
-    best = None
     failures = []
 
+    for cook_idx in (0, 1):
+        for pot_pos in mdp.terrain_pos_dict["P"]:
+            for server_parking in parking_options:
+                for cook_parking in parking_options:
+                    try:
+                        joint_actions = cooperative_joint_actions(
+                            mdp, cook_idx, pot_pos,
+                            server_parking, cook_parking)
+                        result = rollout_joint_actions(env, joint_actions)
+                    except RuntimeError as exc:
+                        failures.append(str(exc))
+                        continue
+                    if result["success"] <= 0:
+                        continue
+                    candidate = {
+                        **result,
+                        "joint_actions": joint_actions[:result["length"]],
+                        "cooperative": True,
+                        "cook_idx": cook_idx,
+                        "serve_idx": 1 - cook_idx,
+                        "pot_pos": pot_pos,
+                        "server_parking": server_parking,
+                        "cook_parking": cook_parking,
+                    }
+                    return candidate
+
+    best = None
     for active_idx in (0, 1):
         for pot_pos in mdp.terrain_pos_dict["P"]:
             for parking_pos in parking_options:
@@ -226,6 +370,7 @@ def find_demonstration(env):
                 candidate = {
                     **result,
                     "joint_actions": joint_actions[:result["length"]],
+                    "cooperative": False,
                     "active_idx": active_idx,
                     "pot_pos": pot_pos,
                     "parking_pos": parking_pos,
@@ -441,11 +586,24 @@ def main():
         "demo_length": demonstration["length"],
         "demo_dense_reward": demonstration["dense_reward"],
         "demo_sparse_reward": demonstration["sparse_reward"],
-        "active_idx": demonstration["active_idx"],
+        "cooperative": demonstration.get("cooperative", False),
+        "active_idx": demonstration.get("active_idx"),
+        "cook_idx": demonstration.get("cook_idx"),
+        "serve_idx": demonstration.get("serve_idx"),
         "pot_pos": list(demonstration["pot_pos"]),
         "parking_pos": (
             list(demonstration["parking_pos"])
             if demonstration["parking_pos"] is not None
+            else None
+        ) if "parking_pos" in demonstration else None,
+        "server_parking": (
+            list(demonstration["server_parking"])
+            if demonstration.get("server_parking") is not None
+            else None
+        ),
+        "cook_parking": (
+            list(demonstration["cook_parking"])
+            if demonstration.get("cook_parking") is not None
             else None
         ),
         "bc_epochs": args.bc_epochs,
