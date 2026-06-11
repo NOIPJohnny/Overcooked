@@ -141,6 +141,38 @@ train_one() {
         --best-checkpoint-save "${checkpoint_base}-best.pt"
 }
 
+plan_bc_one() {
+    layout="$1"
+    out_dir="$(layout_dir "${layout}")"
+    models_dir="${out_dir}/models"
+    logs_dir="${out_dir}/logs"
+    mkdir -p "${models_dir}" "${logs_dir}"
+
+    ego_base="${models_dir}/ego"
+    alt_base="${models_dir}/alt"
+    checkpoint_base="${models_dir}/checkpoint"
+    tensorboard_name="${ALGO_NAME}_${layout}_plan_bc_seed${SEED}"
+
+    if [ "${FORCE}" != "1" ] && \
+       [ -f "${ego_base}-best.pt" ] && \
+       [ -f "${alt_base}-best.pt" ]; then
+        echo "==> Skipping plan-BC ${ALGO_NAME} on ${layout}: model already exists"
+        return 0
+    fi
+
+    echo "==> Plan-BC distilling ${ALGO_NAME} on ${layout}"
+    CUDA_VISIBLE_DEVICES="${GPU_ID}" "${PYTHON_BIN}" mappo_plan_bc.py \
+        OvercookedMultiEnv-v0 \
+        --env-config "$(json_config "${layout}")" \
+        --seed "${SEED}" \
+        --eval-episodes "${FINAL_EVAL_EPISODES}" \
+        --tensorboard-log "${logs_dir}" \
+        --tensorboard-name "${tensorboard_name}" \
+        --ego-save "${ego_base}-best.pt" \
+        --alt-save "${alt_base}-best.pt" \
+        --checkpoint-save "${checkpoint_base}-best.pt"
+}
+
 gif_one() {
     layout="$1"
     ego_base="$(best_or_final "$(ego_model_base "${layout}")")"
@@ -166,6 +198,12 @@ gif_one() {
 train_all() {
     for layout in ${LAYOUTS}; do
         train_one "${layout}"
+    done
+}
+
+plan_bc_all() {
+    for layout in ${LAYOUTS}; do
+        plan_bc_one "${layout}"
     done
 }
 
@@ -217,6 +255,9 @@ case "${1:-help}" in
     train)
         train_all
         ;;
+    plan_bc)
+        plan_bc_all
+        ;;
     gifs|gif)
         gifs_all
         ;;
@@ -237,11 +278,12 @@ case "${1:-help}" in
         latest_all
         ;;
     help|*)
-        echo "Usage: bash runMAPPO.sh {warmstart|train|gifs|eval|plots|all|latest}"
+        echo "Usage: bash runMAPPO.sh {warmstart|train|plan_bc|gifs|eval|plots|all|latest}"
         echo
         echo "Examples:"
         echo "  bash runMAPPO.sh warmstart"
         echo "  bash runMAPPO.sh train"
+        echo "  LAYOUTS='corridor random3 scenario1_s scenario3 scenario4 small_corridor' bash runMAPPO.sh plan_bc"
         echo "  TIMESTEPS=20000 EVAL_FREQ=10000 LAYOUTS='unident' bash runMAPPO.sh all"
         echo "  FORCE=1 LAYOUTS='random3 scenario4' bash runMAPPO.sh train"
         ;;

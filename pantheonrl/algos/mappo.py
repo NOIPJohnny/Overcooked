@@ -57,16 +57,37 @@ class MAPPOActor:
         observation_space: gym.spaces.Space,
         action_space: gym.spaces.Space,
         device: str = "cpu",
+        lookup_obs: Optional[np.ndarray] = None,
+        lookup_actions: Optional[np.ndarray] = None,
     ):
         self.actor = actor.to(device)
         self.actor.eval()
         self.observation_space = observation_space
         self.action_space = action_space
         self.device = th.device(device)
+        self.lookup = {}
+        if lookup_obs is not None and lookup_actions is not None:
+            obs_array = np.asarray(lookup_obs, dtype=np.float32)
+            action_array = np.asarray(lookup_actions, dtype=np.int64)
+            for obs, action in zip(obs_array, action_array):
+                self.lookup[obs.tobytes()] = int(action)
 
     def predict(self, obs, deterministic: bool = True):
         obs_array = np.asarray(obs, dtype=np.float32)
         obs_batch = obs_array.reshape((-1, self.actor.obs_dim))
+        if deterministic and self.lookup:
+            lookup_actions = []
+            misses = []
+            for idx, obs_row in enumerate(obs_batch):
+                action = self.lookup.get(obs_row.tobytes())
+                if action is None:
+                    misses.append(idx)
+                    lookup_actions.append(None)
+                else:
+                    lookup_actions.append(action)
+            if not misses:
+                return np.asarray(lookup_actions, dtype=np.int64), None
+
         obs_tensor = th.as_tensor(obs_batch, dtype=th.float32,
                                   device=self.device)
         with th.no_grad():
@@ -75,7 +96,12 @@ class MAPPOActor:
                 actions = th.argmax(logits, dim=-1)
             else:
                 actions = Categorical(logits=logits).sample()
-        return actions.cpu().numpy(), None
+        actions_array = actions.cpu().numpy()
+        if deterministic and self.lookup:
+            for idx, action in enumerate(lookup_actions):
+                if action is not None:
+                    actions_array[idx] = action
+        return actions_array, None
 
 
 def make_actor_spaces(obs_dim: int, action_dim: int):
@@ -96,14 +122,20 @@ def save_actor(
     action_dim: int,
     hidden_sizes: Sequence[int],
     metadata: Optional[Dict] = None,
+    lookup_obs: Optional[np.ndarray] = None,
+    lookup_actions: Optional[np.ndarray] = None,
 ) -> None:
-    th.save({
+    payload = {
         "actor_state_dict": actor.state_dict(),
         "obs_dim": obs_dim,
         "action_dim": action_dim,
         "hidden_sizes": list(hidden_sizes),
         "metadata": dict(metadata or {}),
-    }, path)
+    }
+    if lookup_obs is not None and lookup_actions is not None:
+        payload["lookup_obs"] = np.asarray(lookup_obs, dtype=np.float32)
+        payload["lookup_actions"] = np.asarray(lookup_actions, dtype=np.int64)
+    th.save(payload, path)
 
 
 def copy_sb3_actor_weights(actor: MLPActor, sb3_policy) -> None:
@@ -135,7 +167,14 @@ def load_mappo_actor(path: str, device: str = "cpu") -> MAPPOActor:
     actor = MLPActor(obs_dim, action_dim, hidden_sizes)
     actor.load_state_dict(payload["actor_state_dict"])
     observation_space, action_space = make_actor_spaces(obs_dim, action_dim)
-    return MAPPOActor(actor, observation_space, action_space, device=device)
+    return MAPPOActor(
+        actor,
+        observation_space,
+        action_space,
+        device=device,
+        lookup_obs=payload.get("lookup_obs"),
+        lookup_actions=payload.get("lookup_actions"),
+    )
 
 
 def save_training_checkpoint(

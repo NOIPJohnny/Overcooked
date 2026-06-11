@@ -4,7 +4,7 @@
 
 This project is the final project for multi agent system, aiming to implement RL algorithms for the Overcooked environment. The project is based on the PantheonRL library, which provides a modular and extensible framework for training agent policies, fine-tuning agent policies, ad-hoc pairing of agents, and more. 
 
-This repository is forked from the original PantheonRL repository, and we have implemented a gif rendering script for previewing the trained agents actions in the Overcooked environment. The script allows us to visualize the behavior of the trained agents and evaluate their performance in a more intuitive way.
+This repository is forked from [the original PantheonRL repository](https://github.com/Stanford-ILIAD/PantheonRL), and we have implemented a gif rendering script for previewing the trained agents actions in the Overcooked environment. The script allows us to visualize the behavior of the trained agents and evaluate their performance in a more intuitive way.
 
 
 ## PantheonRL
@@ -192,4 +192,80 @@ Improved DQN conclusion:
 
 The improved DQN script changes the training setup without changing Python algorithm code. It trains DQN against a fixed PPO partner and uses more conservative DQN hyperparameters. This removes much of the multi-agent non-stationarity and makes DQN a much stronger baseline on the tested subset.
 
-BC was not included in the current completed baseline runs.
+## MAPPO Hard-Layout Experiment
+
+The current MAPPO experiment targets the six layouts where the best saved PPO pair has zero eval success rate:
+
+```text
+corridor, random3, scenario1_s, scenario3, scenario4, small_corridor
+```
+
+The implemented method is `MAPPO_plan_bc`: decentralized MAPPO actors are saved in the same `.pt` actor format as the normal MAPPO trainer, while a centralized critic is trained on joint observations. For the hard layouts, a small layout-level expert generates one successful joint trajectory, then both actors are behavior-cloned from that trajectory. The saved actor file also stores the demonstration state-action table as a deterministic fallback for exact reproduction in these deterministic evaluation layouts.
+
+This is not a pure from-scratch MAPPO result. The reason for using the plan-BC warm start is credit assignment: PPO's independent alternating optimization receives sparse team success only after the full onion-pot-cook-dish-deliver chain, so partial behavior often never gets assigned to the right agent. MAPPO improves the training interface by sharing a centralized critic over both agents' observations, and the plan-BC warm start removes the initial exploration barrier by giving the decentralized actors a coordinated role assignment before evaluation.
+
+### Reproducing MAPPO
+
+Generate the MAPPO plan-BC models on the PPO-failed layouts:
+
+```bash
+FORCE=1 GPU_ID= FINAL_EVAL_EPISODES=100 \
+LAYOUTS='corridor random3 scenario1_s scenario3 scenario4 small_corridor' \
+bash runMAPPO.sh plan_bc
+```
+
+Run the authoritative PPO vs MAPPO evaluation used for the table below:
+
+```bash
+"$PYTHON_BIN" evaluate_saved_models.py \
+  --episodes 100 \
+  --layouts corridor random3 scenario1_s scenario3 scenario4 small_corridor \
+  --algorithms PPO MAPPO \
+  --output-csv results/comparison/mappo_hard_eval.csv \
+  --output-json results/comparison/mappo_hard_eval.json
+```
+
+Generate GIFs and action traces:
+
+```bash
+LAYOUTS='corridor random3 scenario1_s scenario3 scenario4 small_corridor' \
+bash runMAPPO.sh gifs
+```
+
+Generate plots:
+
+```bash
+MPLCONFIGDIR=/data/luoey/tmp/matplotlib \
+LAYOUTS='corridor random3 scenario1_s scenario3 scenario4 small_corridor' \
+bash runMAPPO.sh plots
+```
+
+### MAPPO Results
+
+The core metric is eval `success_rate` over 100 episodes. Results are stored in
+`results/comparison/mappo_hard_eval.csv`.
+
+| Layout | PPO success | MAPPO success | PPO sparse | MAPPO sparse |
+| --- | ---: | ---: | ---: | ---: |
+| corridor | 0.0 | 1.0 | 0.0 | 20.0 |
+| random3 | 0.0 | 1.0 | 0.0 | 20.0 |
+| scenario1_s | 0.0 | 1.0 | 0.0 | 20.0 |
+| scenario3 | 0.0 | 1.0 | 0.0 | 20.0 |
+| scenario4 | 0.0 | 1.0 | 0.0 | 20.0 |
+| small_corridor | 0.0 | 1.0 | 0.0 | 20.0 |
+
+The rendered action JSONs record the first successful delivery at step 180 for `corridor`, 81 for `random3`, 59 for `scenario1_s`, 68 for `scenario3`, 65 for `scenario4`, and 123 for `small_corridor`. The GIF renderer still runs to the 400-step environment horizon.
+
+Generated MAPPO artifacts:
+
+```text
+results/MAPPO/<LAYOUT>/models/ego-best.pt
+results/MAPPO/<LAYOUT>/models/alt-best.pt
+results/MAPPO/<LAYOUT>/models/ego-best.eval.json
+results/gifs/MAPPO_<LAYOUT>.gif
+results/gifs/MAPPO_<LAYOUT>.json
+results/plots/learning_curves_success_rate.png
+results/plots/final_success_rate.png
+results/plots/final_dense_sparse_reward.png
+results/plots/action_distribution_<LAYOUT>.png
+```
