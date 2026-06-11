@@ -196,19 +196,23 @@ The improved DQN script changes the training setup without changing Python algor
 
 The MAPPO validation covers all 16 main layouts. There are two MAPPO model sources:
 
-- `MAPPO_plan_bc` for the six PPO-failed layouts: `corridor`, `random3`, `scenario1_s`, `scenario3`, `scenario4`, and `small_corridor`.
+- continuous `MAPPO_plan_bc` for the six PPO-failed layouts: `corridor`, `random3`, `scenario1_s`, `scenario3`, `scenario4`, and `small_corridor`.
 - PPO-to-MAPPO warm start for the ten layouts PPO already solved: `five_by_five`, `random0`, `random1`, `random2`, `scenario2`, `scenario2_s`, `schelling`, `schelling_s`, `unident`, and `unident_s`.
 
-The hard-layout method is not pure from-scratch MAPPO. It uses decentralized MAPPO actors, a centralized critic checkpoint, and a cooperative behavior-cloning warm start. The layout-level expert assigns explicit roles: one actor fills the pot with onions, and the other actor takes the dish, picks up the finished soup, and delivers it. This addresses the sparse-reward credit-assignment failure mode seen in PPO, where agents often complete cooking but fail to assign the final delivery behavior reliably.
+The hard-layout method is not pure from-scratch MAPPO. It uses decentralized MAPPO actors, a centralized critic checkpoint, and an expert-guided deterministic plan-BC lookup. The expert assigns explicit roles: one actor fills the pot with onions, and the other actor takes the dish, picks up the finished soup, and delivers it. The current expert replans from the environment's current player positions after each delivery and records a full 400-step demonstration, so the saved policy continues producing after the first successful delivery.
+
+The latest hard-layout expert also optimizes for speed. It evaluates candidates where the serving actor prefetches a dish while the cooking actor fills the pot, and where the cooking actor moves to a parking location after filling so the serving actor can take soup without a long detour. On layouts with multiple pots, it also keeps the two-pot pipeline candidate. Candidate selection first preserves delivery count, then prefers higher speed score from earlier delivery steps.
+
+This addresses the sparse-reward credit-assignment failure mode seen in PPO, where agents often complete cooking but fail to assign the final delivery behavior reliably. It should still be read as expert-guided MAPPO initialization/evaluation, not evidence that plain MAPPO learned these hard layouts from scratch.
 
 The PPO-success layouts use PPO-to-MAPPO warm start rather than plan-BC. This is intentional: several of these layouts require counter handoff behavior that the simple plan-BC expert does not model. The warm-start run verifies that the MAPPO actor format, loader, renderer, and evaluator preserve PPO-level performance on layouts where PPO already succeeds, so the MAPPO extension does not regress previously solved cases.
 
 ### Reproducing MAPPO
 
-Generate cooperative plan-BC MAPPO models on the PPO-failed layouts:
+Generate continuous plan-BC MAPPO models on the PPO-failed layouts:
 
 ```bash
-FORCE=1 GPU_ID= FINAL_EVAL_EPISODES=100 \
+FORCE=1 GPU_ID= FINAL_EVAL_EPISODES=100 PLAN_BC_MIN_DELIVERIES=2 \
 LAYOUTS='corridor random3 scenario1_s scenario3 scenario4 small_corridor' \
 bash runMAPPO.sh plan_bc
 ```
@@ -232,6 +236,17 @@ Run the full PPO vs MAPPO evaluation:
   --output-json results/comparison/mappo_all_eval.json
 ```
 
+Run the hard-layout speed check:
+
+```bash
+"$PYTHON_BIN" evaluate_saved_models.py \
+  --episodes 100 \
+  --layouts corridor random3 scenario1_s scenario3 scenario4 small_corridor \
+  --algorithms PPO MAPPO \
+  --output-csv results/comparison/mappo_hard_speed_eval.csv \
+  --output-json results/comparison/mappo_hard_speed_eval.json
+```
+
 Generate GIFs, action traces, and plots:
 
 ```bash
@@ -245,39 +260,39 @@ bash runMAPPO.sh plots
 
 ### MAPPO Results
 
-The core metric is eval `success_rate` over 100 episodes. Full results are stored in `results/comparison/mappo_all_eval.csv`. PPO solves 10/16 layouts; MAPPO solves 16/16. On the ten PPO-success layouts, MAPPO preserves the PPO success rate and sparse reward.
+The core metrics are eval `success_rate` and sparse reward over 100 episodes. Full results are stored in `results/comparison/mappo_all_eval.csv`; hard-layout speed results are stored in `results/comparison/mappo_hard_speed_eval.csv`. PPO solves 10/16 layouts; MAPPO solves 16/16. On the ten PPO-success layouts, MAPPO preserves the PPO success rate and sparse reward.
 
 | Layout | MAPPO source | PPO success | MAPPO success | PPO sparse | MAPPO sparse |
 | --- | --- | ---: | ---: | ---: | ---: |
-| corridor | plan_bc | 0.0 | 1.0 | 0.0 | 20.0 |
+| corridor | speed_plan_bc | 0.0 | 1.0 | 0.0 | 40.0 |
 | five_by_five | ppo_warmstart | 1.0 | 1.0 | 280.0 | 280.0 |
 | random0 | ppo_warmstart | 1.0 | 1.0 | 220.0 | 220.0 |
 | random1 | ppo_warmstart | 1.0 | 1.0 | 200.0 | 200.0 |
 | random2 | ppo_warmstart | 1.0 | 1.0 | 220.0 | 220.0 |
-| random3 | plan_bc | 0.0 | 1.0 | 0.0 | 20.0 |
-| scenario1_s | plan_bc | 0.0 | 1.0 | 0.0 | 20.0 |
+| random3 | speed_plan_bc | 0.0 | 1.0 | 0.0 | 100.0 |
+| scenario1_s | speed_plan_bc | 0.0 | 1.0 | 0.0 | 140.0 |
 | scenario2 | ppo_warmstart | 1.0 | 1.0 | 220.0 | 220.0 |
 | scenario2_s | ppo_warmstart | 1.0 | 1.0 | 220.0 | 220.0 |
-| scenario3 | plan_bc | 0.0 | 1.0 | 0.0 | 20.0 |
-| scenario4 | plan_bc | 0.0 | 1.0 | 0.0 | 20.0 |
+| scenario3 | speed_plan_bc | 0.0 | 1.0 | 0.0 | 140.0 |
+| scenario4 | speed_plan_bc | 0.0 | 1.0 | 0.0 | 140.0 |
 | schelling | ppo_warmstart | 1.0 | 1.0 | 140.0 | 140.0 |
 | schelling_s | ppo_warmstart | 1.0 | 1.0 | 240.0 | 240.0 |
-| small_corridor | plan_bc | 0.0 | 1.0 | 0.0 | 20.0 |
+| small_corridor | speed_plan_bc | 0.0 | 1.0 | 0.0 | 60.0 |
 | unident | ppo_warmstart | 1.0 | 1.0 | 420.0 | 420.0 |
 | unident_s | ppo_warmstart | 1.0 | 1.0 | 460.0 | 460.0 |
 
-The rendered MAPPO action JSONs record the first successful delivery at step 178 for `corridor`, 39 for `five_by_five`, 42 for `random0`, 46 for `random1`, 42 for `random2`, 90 for `random3`, 56 for `scenario1_s`, 41 for `scenario2`, 42 for `scenario2_s`, 68 for `scenario3`, 71 for `scenario4`, 56 for `schelling`, 39 for `schelling_s`, 118 for `small_corridor`, 38 for `unident`, and 35 for `unident_s`. The GIF renderer still runs to the 400-step environment horizon.
+For the six hard plan-BC layouts, the saved action JSONs confirm faster repeated deliveries across the full 400-step episode:
 
-For the six cooperative plan-BC layouts, both actors contribute in the saved MAPPO demonstrations:
+| Layout | Expert mode | Previous success steps | New success steps | Delivery change | MAPPO sparse | Ego/Alt non-stay actions |
+| --- | --- | --- | --- | ---: | ---: | ---: |
+| corridor | two_pot_pipeline | 178, 378 | 179, 328 | 2 -> 2 | 40.0 | 270 / 99 |
+| random3 | prefetch_single_pot_loop | 90, 184, 278, 372 | 70, 145, 220, 295, 370 | 4 -> 5 | 100.0 | 265 / 119 |
+| scenario1_s | prefetch_single_pot_loop | 56, 120, 184, 248, 312, 376 | 54, 111, 168, 225, 282, 339, 396 | 6 -> 7 | 140.0 | 253 / 96 |
+| scenario3 | prefetch_single_pot_loop | 68, 136, 204, 272, 340 | 52, 103, 154, 205, 256, 307, 358 | 5 -> 7 | 140.0 | 170 / 178 |
+| scenario4 | prefetch_single_pot_loop | 71, 137, 203, 269, 335 | 67, 118, 169, 220, 271, 322, 373 | 5 -> 7 | 140.0 | 190 / 178 |
+| small_corridor | prefetch_single_pot_loop | 118, 251, 384 | 110, 223, 336 | 3 -> 3 | 60.0 | 337 / 107 |
 
-| Layout | Cook actor | Serve actor | Ego non-stay actions | Alt non-stay actions |
-| --- | ---: | ---: | ---: | ---: |
-| corridor | 0 | 1 | 138 | 41 |
-| random3 | 0 | 1 | 49 | 24 |
-| scenario1_s | 0 | 1 | 34 | 9 |
-| scenario3 | 0 | 1 | 29 | 28 |
-| scenario4 | 0 | 1 | 29 | 31 |
-| small_corridor | 0 | 1 | 90 | 21 |
+`random3`, `scenario1_s`, `scenario3`, and `scenario4` now reach 5-7 deliveries in 400 steps. `small_corridor` keeps 3 deliveries but moves every delivery earlier. `corridor` still reaches 2 deliveries, but the second delivery moves from step 378 to step 328 through the two-pot pipeline candidate; the first delivery is one step later, so the improvement is throughput/interval rather than first-delivery latency. These corridor layouts remain lower-throughput because the topology forces long repeated onion-to-pot and soup-to-serving trips.
 
 Generated MAPPO artifacts:
 
@@ -286,6 +301,7 @@ results/MAPPO/<LAYOUT>/models/ego-best.pt
 results/MAPPO/<LAYOUT>/models/alt-best.pt
 results/MAPPO/<LAYOUT>/models/ego-best.eval.json
 results/comparison/mappo_all_eval.csv
+results/comparison/mappo_hard_speed_eval.csv
 results/gifs/MAPPO_<LAYOUT>.gif
 results/gifs/MAPPO_<LAYOUT>.json
 results/plots/learning_curves_success_rate.png

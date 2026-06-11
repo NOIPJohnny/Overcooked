@@ -159,7 +159,8 @@ def build_active_plan(mdp, active_start, active_orientation, pot_pos, blocked):
     return actions
 
 
-def build_fill_plan(mdp, start_pos, start_orientation, pot_pos, blocked):
+def build_fill_remaining_plan(mdp, start_pos, start_orientation, pot_pos,
+                              blocked, item_count):
     pos = start_pos
     orientation = start_orientation
     actions = []
@@ -170,7 +171,7 @@ def build_fill_plan(mdp, start_pos, start_orientation, pot_pos, blocked):
             mdp, pos, orientation, terrain_pos, blocked)
         actions.extend(new_actions)
 
-    for _ in range(mdp.num_items_for_soup):
+    for _ in range(item_count):
         best_onion = None
         for onion_pos in mdp.terrain_pos_dict["O"]:
             try:
@@ -186,6 +187,17 @@ def build_fill_plan(mdp, start_pos, start_orientation, pot_pos, blocked):
         add_interaction(best_onion[1])
         add_interaction(pot_pos)
     return actions, pos, orientation
+
+
+def build_fill_plan(mdp, start_pos, start_orientation, pot_pos, blocked):
+    return build_fill_remaining_plan(
+        mdp,
+        start_pos,
+        start_orientation,
+        pot_pos,
+        blocked,
+        mdp.num_items_for_soup,
+    )
 
 
 def build_serve_plan(mdp, start_pos, start_orientation, pot_pos, blocked):
@@ -212,6 +224,58 @@ def build_serve_plan(mdp, start_pos, start_orientation, pot_pos, blocked):
     )
     add_interaction(serving_pos)
     return actions, pos, orientation
+
+
+def build_dish_parking_plan(mdp, start_pos, start_orientation, parking_pos,
+                            blocked):
+    pos = start_pos
+    orientation = start_orientation
+    actions = []
+
+    dish_pos = min(
+        mdp.terrain_pos_dict["D"],
+        key=lambda p: len(plan_to_interact(mdp, pos, orientation, p, blocked)[0]),
+    )
+    dish_actions, pos, orientation = plan_to_interact(
+        mdp, pos, orientation, dish_pos, blocked)
+    actions.extend(dish_actions)
+
+    if parking_pos is not None and parking_pos != pos:
+        parking_actions, pos, orientation = plan_motion_to(
+            mdp, pos, orientation, parking_pos, blocked)
+        actions.extend(parking_actions)
+
+    return actions, pos, orientation
+
+
+def build_soup_delivery_plan(mdp, start_pos, start_orientation, pot_pos,
+                             blocked):
+    pos = start_pos
+    orientation = start_orientation
+    actions = []
+
+    pot_actions, pos, orientation = plan_to_interact(
+        mdp, pos, orientation, pot_pos, blocked)
+    actions.extend(pot_actions)
+
+    serving_pos = min(
+        mdp.terrain_pos_dict["S"],
+        key=lambda p: len(plan_to_interact(mdp, pos, orientation, p, blocked)[0]),
+    )
+    serving_actions, pos, orientation = plan_to_interact(
+        mdp, pos, orientation, serving_pos, blocked)
+    actions.extend(serving_actions)
+    return actions, pos, orientation
+
+
+def build_deliver_held_soup_plan(mdp, start_pos, start_orientation, blocked):
+    pos = start_pos
+    orientation = start_orientation
+    serving_pos = min(
+        mdp.terrain_pos_dict["S"],
+        key=lambda p: len(plan_to_interact(mdp, pos, orientation, p, blocked)[0]),
+    )
+    return plan_to_interact(mdp, pos, orientation, serving_pos, blocked)
 
 
 def cooperative_joint_actions(mdp, cook_idx, pot_pos, server_parking,
@@ -294,23 +358,31 @@ def candidate_joint_actions(mdp, active_idx, pot_pos, parking_pos):
     return joint_actions
 
 
-def rollout_joint_actions(env, joint_actions):
+def rollout_joint_actions(env, joint_actions, horizon=None):
     obs = env.multi_reset()
     records = []
     sparse_total = 0.0
     dense_total = 0.0
     success = 0.0
+    success_steps = []
+    delivery_count = 0
     done = False
 
     for joint_action in joint_actions:
+        if horizon is not None and len(records) >= horizon:
+            break
         action0 = Action.ACTION_TO_INDEX[joint_action[0]]
         action1 = Action.ACTION_TO_INDEX[joint_action[1]]
         records.append((obs[0], obs[1], action0, action1))
         obs, rewards, done, info = env.multi_step(action0, action1)
         dense_total += float(rewards[0])
-        sparse_total += float(info.get("sparse_r", 0.0))
+        sparse_r = float(info.get("sparse_r", 0.0))
+        sparse_total += sparse_r
         success = max(success, float(info.get("success", 0.0)))
-        if done or sparse_total > 0:
+        if sparse_r > 0:
+            success_steps.append(len(records) - 1)
+            delivery_count += max(1, int(round(sparse_r / env.mdp.delivery_reward)))
+        if done:
             break
 
     return {
@@ -318,12 +390,522 @@ def rollout_joint_actions(env, joint_actions):
         "sparse_reward": sparse_total,
         "dense_reward": dense_total,
         "success": success,
+        "success_steps": success_steps,
+        "delivery_count": delivery_count,
         "length": len(records),
         "done": done,
     }
 
 
-def find_demonstration(env):
+def player_pose(env, player_idx):
+    player = env.base_env.state.players[player_idx]
+    return player.position, player.orientation
+
+
+def player_object_name(env, player_idx):
+    held_object = env.base_env.state.players[player_idx].held_object
+    return None if held_object is None else held_object.name
+
+
+def pot_object(env, pot_pos):
+    return env.base_env.state.objects.get(pot_pos)
+
+
+def pot_is_empty(env, pot_pos):
+    return pot_object(env, pot_pos) is None
+
+
+def pot_item_count(env, pot_pos):
+    obj = pot_object(env, pot_pos)
+    if obj is None or obj.name != "soup":
+        return 0
+    return obj.state[1]
+
+
+def pot_is_full(env, pot_pos):
+    return pot_item_count(env, pot_pos) >= env.mdp.num_items_for_soup
+
+
+def pot_is_ready(env, pot_pos):
+    obj = pot_object(env, pot_pos)
+    return (
+        obj is not None
+        and obj.name == "soup"
+        and obj.state[1] == env.mdp.num_items_for_soup
+        and obj.state[2] >= env.mdp.soup_cooking_time
+    )
+
+
+class ExpertRollout:
+    def __init__(self, env, horizon):
+        self.env = env
+        self.horizon = horizon
+        self.obs = env.multi_reset()
+        self.records = []
+        self.sparse_reward = 0.0
+        self.dense_reward = 0.0
+        self.success = 0.0
+        self.success_steps = []
+        self.delivery_count = 0
+        self.done = False
+
+    @property
+    def remaining(self):
+        return self.horizon - len(self.records)
+
+    def step_joint(self, joint_action):
+        if self.done or self.remaining <= 0:
+            return False
+        action0 = Action.ACTION_TO_INDEX[joint_action[0]]
+        action1 = Action.ACTION_TO_INDEX[joint_action[1]]
+        self.records.append((self.obs[0], self.obs[1], action0, action1))
+        self.obs, rewards, self.done, info = self.env.multi_step(action0, action1)
+        self.dense_reward += float(rewards[0])
+        sparse_r = float(info.get("sparse_r", 0.0))
+        self.sparse_reward += sparse_r
+        self.success = max(self.success, float(info.get("success", 0.0)))
+        if sparse_r > 0:
+            self.success_steps.append(len(self.records) - 1)
+            self.delivery_count += max(
+                1, int(round(sparse_r / self.env.mdp.delivery_reward)))
+        return not self.done
+
+    def run_actor_actions(self, actor_idx, actions):
+        for action in actions:
+            joint = [Action.STAY, Action.STAY]
+            joint[actor_idx] = action
+            if not self.step_joint(tuple(joint)):
+                return False
+        return True
+
+    def run_joint_actions(self, joint_actions):
+        for joint_action in joint_actions:
+            if not self.step_joint(joint_action):
+                return False
+        return True
+
+    def run_parallel_actions(self, actions0, actions1):
+        max_len = max(len(actions0), len(actions1))
+        for idx in range(max_len):
+            joint = (
+                actions0[idx] if idx < len(actions0) else Action.STAY,
+                actions1[idx] if idx < len(actions1) else Action.STAY,
+            )
+            if not self.step_joint(joint):
+                return False
+        return True
+
+    def wait(self, steps):
+        for _ in range(steps):
+            if not self.step_joint((Action.STAY, Action.STAY)):
+                return False
+        return True
+
+    def wait_until_pot_ready(self, pot_pos):
+        while self.remaining > 0 and not self.done and not pot_is_ready(self.env, pot_pos):
+            if not self.step_joint((Action.STAY, Action.STAY)):
+                return False
+        return pot_is_ready(self.env, pot_pos)
+
+    def finish_with_stay(self):
+        while self.remaining > 0 and not self.done:
+            self.step_joint((Action.STAY, Action.STAY))
+
+    def result(self):
+        return {
+            "records": self.records,
+            "sparse_reward": self.sparse_reward,
+            "dense_reward": self.dense_reward,
+            "success": self.success,
+            "success_steps": self.success_steps,
+            "delivery_count": self.delivery_count,
+            "length": len(self.records),
+            "done": self.done,
+        }
+
+
+def move_actor_to_parking(rollout, actor_idx, parking_pos):
+    if parking_pos is None or rollout.remaining <= 0:
+        return True
+    mdp = rollout.env.mdp
+    other_idx = 1 - actor_idx
+    pos, orientation = player_pose(rollout.env, actor_idx)
+    other_pos, _ = player_pose(rollout.env, other_idx)
+    if pos == parking_pos:
+        return True
+    actions, _, _ = plan_motion_to(
+        mdp, pos, orientation, parking_pos, blocked={other_pos})
+    return rollout.run_actor_actions(actor_idx, actions)
+
+
+def finish_fill_from_current_state(rollout, cook_idx, pot_pos):
+    mdp = rollout.env.mdp
+    while rollout.remaining > 0 and not rollout.done and not pot_is_full(rollout.env, pot_pos):
+        cook_pos, cook_orientation = player_pose(rollout.env, cook_idx)
+        serve_pos, _ = player_pose(rollout.env, 1 - cook_idx)
+        held = player_object_name(rollout.env, cook_idx)
+        if held in ("onion", "tomato"):
+            actions, _, _ = plan_to_interact(
+                mdp, cook_pos, cook_orientation, pot_pos, blocked={serve_pos})
+        else:
+            remaining_items = mdp.num_items_for_soup - pot_item_count(
+                rollout.env, pot_pos)
+            actions, _, _ = build_fill_remaining_plan(
+                mdp,
+                cook_pos,
+                cook_orientation,
+                pot_pos,
+                blocked={serve_pos},
+                item_count=remaining_items,
+            )
+        if not rollout.run_actor_actions(cook_idx, actions):
+            return False
+    return pot_is_full(rollout.env, pot_pos)
+
+
+def candidate_from_rollout(result, metadata):
+    success_steps = result.get("success_steps", [])
+    intervals = [
+        success_steps[idx] - success_steps[idx - 1]
+        for idx in range(1, len(success_steps))
+    ]
+    candidate = {
+        **result,
+        **metadata,
+        "joint_actions": [
+            (Action.INDEX_TO_ACTION[r[2]], Action.INDEX_TO_ACTION[r[3]])
+            for r in result["records"]
+        ],
+    }
+    candidate["first_success_step"] = success_steps[0] if success_steps else None
+    candidate["mean_delivery_interval"] = (
+        float(np.mean(intervals)) if intervals else None
+    )
+    candidate["speed_score"] = sum(
+        max(result["length"] - step, 0) for step in success_steps)
+    return candidate
+
+
+def rollout_single_pot_loop(env, seed, demo_horizon):
+    mdp = env.mdp
+    cook_idx = seed["cook_idx"]
+    serve_idx = seed["serve_idx"]
+    pot_pos = tuple(seed["pot_pos"])
+    rollout = ExpertRollout(env, demo_horizon)
+
+    if seed.get("server_parking") is not None:
+        move_actor_to_parking(rollout, serve_idx, tuple(seed["server_parking"]))
+
+    while rollout.remaining > 0 and not rollout.done:
+        if not pot_is_empty(env, pot_pos):
+            if not rollout.wait_until_pot_ready(pot_pos):
+                break
+            cook_pos, _ = player_pose(env, cook_idx)
+            serve_pos, serve_orientation = player_pose(env, serve_idx)
+            serve_actions, _, _ = build_serve_plan(
+                mdp, serve_pos, serve_orientation, pot_pos, blocked={cook_pos})
+            rollout.run_actor_actions(serve_idx, serve_actions)
+            continue
+
+        cook_pos, cook_orientation = player_pose(env, cook_idx)
+        serve_pos, _ = player_pose(env, serve_idx)
+        fill_actions, _, _ = build_fill_plan(
+            mdp, cook_pos, cook_orientation, pot_pos, blocked={serve_pos})
+        if not rollout.run_actor_actions(cook_idx, fill_actions):
+            break
+
+        if seed.get("cook_parking") is not None:
+            move_actor_to_parking(rollout, cook_idx, tuple(seed["cook_parking"]))
+
+        if not rollout.wait_until_pot_ready(pot_pos):
+            break
+
+        cook_pos, _ = player_pose(env, cook_idx)
+        serve_pos, serve_orientation = player_pose(env, serve_idx)
+        serve_actions, _, _ = build_serve_plan(
+            mdp, serve_pos, serve_orientation, pot_pos, blocked={cook_pos})
+        if not rollout.run_actor_actions(serve_idx, serve_actions):
+            break
+
+    rollout.finish_with_stay()
+    return candidate_from_rollout(
+        rollout.result(),
+        {
+            "cooperative": True,
+            "expert_mode": "single_pot_loop",
+            "cook_idx": cook_idx,
+            "serve_idx": serve_idx,
+            "pot_pos": pot_pos,
+            "server_parking": seed.get("server_parking"),
+            "cook_parking": seed.get("cook_parking"),
+            "prefetch_parking": None,
+        },
+    )
+
+
+def rollout_prefetch_single_pot_loop(env, seed, demo_horizon,
+                                     prefetch_parking, cook_parking):
+    mdp = env.mdp
+    cook_idx = seed["cook_idx"]
+    serve_idx = seed["serve_idx"]
+    pot_pos = tuple(seed["pot_pos"])
+    rollout = ExpertRollout(env, demo_horizon)
+
+    while rollout.remaining > 0 and not rollout.done:
+        if not pot_is_empty(env, pot_pos):
+            if not rollout.wait_until_pot_ready(pot_pos):
+                break
+            cook_pos, _ = player_pose(env, cook_idx)
+            serve_pos, serve_orientation = player_pose(env, serve_idx)
+            held = player_object_name(env, serve_idx)
+            if held == "dish":
+                serve_actions, _, _ = build_soup_delivery_plan(
+                    mdp, serve_pos, serve_orientation, pot_pos, blocked={cook_pos})
+            elif held == "soup":
+                serve_actions, _, _ = build_deliver_held_soup_plan(
+                    mdp, serve_pos, serve_orientation, blocked={cook_pos})
+            else:
+                serve_actions, _, _ = build_serve_plan(
+                    mdp, serve_pos, serve_orientation, pot_pos, blocked={cook_pos})
+            rollout.run_actor_actions(serve_idx, serve_actions)
+            continue
+
+        cook_pos, cook_orientation = player_pose(env, cook_idx)
+        serve_pos, serve_orientation = player_pose(env, serve_idx)
+        fill_actions, _, _ = build_fill_plan(
+            mdp, cook_pos, cook_orientation, pot_pos, blocked=set())
+
+        held = player_object_name(env, serve_idx)
+        if held == "dish":
+            if prefetch_parking is None:
+                prefetch_actions = []
+            else:
+                prefetch_actions, _, _ = plan_motion_to(
+                    mdp,
+                    serve_pos,
+                    serve_orientation,
+                    prefetch_parking,
+                    blocked=set(),
+                )
+        elif held is None:
+            prefetch_actions, _, _ = build_dish_parking_plan(
+                mdp,
+                serve_pos,
+                serve_orientation,
+                prefetch_parking,
+                blocked=set(),
+            )
+        else:
+            prefetch_actions = []
+
+        actions0 = fill_actions if cook_idx == 0 else prefetch_actions
+        actions1 = prefetch_actions if cook_idx == 0 else fill_actions
+        rollout.run_parallel_actions(actions0, actions1)
+
+        if not finish_fill_from_current_state(rollout, cook_idx, pot_pos):
+            break
+
+        if player_object_name(env, serve_idx) is None:
+            serve_pos, serve_orientation = player_pose(env, serve_idx)
+            cook_pos, _ = player_pose(env, cook_idx)
+            dish_actions, _, _ = build_dish_parking_plan(
+                mdp,
+                serve_pos,
+                serve_orientation,
+                prefetch_parking,
+                blocked={cook_pos},
+            )
+            rollout.run_actor_actions(serve_idx, dish_actions)
+        elif player_object_name(env, serve_idx) == "dish" and prefetch_parking is not None:
+            move_actor_to_parking(rollout, serve_idx, prefetch_parking)
+
+        if cook_parking is not None:
+            move_actor_to_parking(rollout, cook_idx, cook_parking)
+
+        if not rollout.wait_until_pot_ready(pot_pos):
+            break
+
+        cook_pos, _ = player_pose(env, cook_idx)
+        serve_pos, serve_orientation = player_pose(env, serve_idx)
+        held = player_object_name(env, serve_idx)
+        if held == "dish":
+            serve_actions, _, _ = build_soup_delivery_plan(
+                mdp, serve_pos, serve_orientation, pot_pos, blocked={cook_pos})
+        elif held == "soup":
+            serve_actions, _, _ = build_deliver_held_soup_plan(
+                mdp, serve_pos, serve_orientation, blocked={cook_pos})
+        else:
+            serve_actions, _, _ = build_serve_plan(
+                mdp, serve_pos, serve_orientation, pot_pos, blocked={cook_pos})
+        if not rollout.run_actor_actions(serve_idx, serve_actions):
+            break
+
+    rollout.finish_with_stay()
+    return candidate_from_rollout(
+        rollout.result(),
+        {
+            "cooperative": True,
+            "expert_mode": "prefetch_single_pot_loop",
+            "cook_idx": cook_idx,
+            "serve_idx": serve_idx,
+            "pot_pos": pot_pos,
+            "server_parking": seed.get("server_parking"),
+            "cook_parking": cook_parking,
+            "prefetch_parking": prefetch_parking,
+        },
+    )
+
+
+def rollout_two_pot_pipeline(env, seed, demo_horizon, second_pot,
+                             prefetch_parking=None, serve_delay=0):
+    mdp = env.mdp
+    cook_idx = seed["cook_idx"]
+    serve_idx = seed["serve_idx"]
+    first_pot = tuple(seed["pot_pos"])
+    second_pot = tuple(second_pot)
+    rollout = ExpertRollout(env, demo_horizon)
+
+    cook_pos, cook_orientation = player_pose(env, cook_idx)
+    serve_pos, serve_orientation = player_pose(env, serve_idx)
+    fill_first, _, _ = build_fill_plan(
+        mdp, cook_pos, cook_orientation, first_pot, blocked=set())
+    if prefetch_parking is None:
+        dish_plan = []
+    else:
+        dish_plan, _, _ = build_dish_parking_plan(
+            mdp, serve_pos, serve_orientation, prefetch_parking, blocked=set())
+    actions0 = fill_first if cook_idx == 0 else dish_plan
+    actions1 = dish_plan if cook_idx == 0 else fill_first
+    if not rollout.run_parallel_actions(actions0, actions1):
+        rollout.finish_with_stay()
+        return candidate_from_rollout(rollout.result(), {
+            "cooperative": True,
+            "expert_mode": "two_pot_pipeline",
+            "cook_idx": cook_idx,
+            "serve_idx": serve_idx,
+            "pot_pos": first_pot,
+            "second_pot_pos": second_pot,
+            "server_parking": seed.get("server_parking"),
+            "cook_parking": seed.get("cook_parking"),
+            "prefetch_parking": prefetch_parking,
+            "serve_delay": serve_delay,
+        })
+
+    cook_pos, cook_orientation = player_pose(env, cook_idx)
+    serve_pos, serve_orientation = player_pose(env, serve_idx)
+    fill_second, _, _ = build_fill_plan(
+        mdp, cook_pos, cook_orientation, second_pot, blocked=set())
+    if player_object_name(env, serve_idx) == "dish":
+        serve_first, _, _ = build_soup_delivery_plan(
+            mdp, serve_pos, serve_orientation, first_pot, blocked=set())
+    else:
+        serve_first, _, _ = build_serve_plan(
+            mdp, serve_pos, serve_orientation, first_pot, blocked=set())
+    serve_first = [Action.STAY] * serve_delay + serve_first
+    actions0 = fill_second if cook_idx == 0 else serve_first
+    actions1 = serve_first if cook_idx == 0 else fill_second
+    rollout.run_parallel_actions(actions0, actions1)
+
+    if not pot_is_ready(env, first_pot) and pot_object(env, first_pot) is not None:
+        rollout.wait_until_pot_ready(first_pot)
+    if pot_object(env, first_pot) is not None:
+        cook_pos, _ = player_pose(env, cook_idx)
+        serve_pos, serve_orientation = player_pose(env, serve_idx)
+        if player_object_name(env, serve_idx) == "soup":
+            delivery_actions, _, _ = build_deliver_held_soup_plan(
+                mdp, serve_pos, serve_orientation, blocked={cook_pos})
+        elif player_object_name(env, serve_idx) == "dish":
+            delivery_actions, _, _ = build_soup_delivery_plan(
+                mdp, serve_pos, serve_orientation, first_pot, blocked={cook_pos})
+        else:
+            delivery_actions, _, _ = build_serve_plan(
+                mdp, serve_pos, serve_orientation, first_pot, blocked={cook_pos})
+        rollout.run_actor_actions(serve_idx, delivery_actions)
+
+    if pot_object(env, second_pot) is None or (
+            pot_object(env, second_pot).state[1] < mdp.num_items_for_soup):
+        cook_pos, cook_orientation = player_pose(env, cook_idx)
+        serve_pos, _ = player_pose(env, serve_idx)
+        try:
+            fill_second, _, _ = build_fill_plan(
+                mdp, cook_pos, cook_orientation, second_pot, blocked={serve_pos})
+            rollout.run_actor_actions(cook_idx, fill_second)
+        except RuntimeError:
+            pass
+
+    if seed.get("cook_parking") is not None:
+        move_actor_to_parking(rollout, cook_idx, tuple(seed["cook_parking"]))
+
+    if rollout.wait_until_pot_ready(second_pot):
+        cook_pos, _ = player_pose(env, cook_idx)
+        serve_pos, serve_orientation = player_pose(env, serve_idx)
+        if player_object_name(env, serve_idx) == "dish":
+            serve_second, _, _ = build_soup_delivery_plan(
+                mdp, serve_pos, serve_orientation, second_pot, blocked={cook_pos})
+        elif player_object_name(env, serve_idx) == "soup":
+            serve_second, _, _ = build_deliver_held_soup_plan(
+                mdp, serve_pos, serve_orientation, blocked={cook_pos})
+        else:
+            serve_second, _, _ = build_serve_plan(
+                mdp, serve_pos, serve_orientation, second_pot, blocked={cook_pos})
+        rollout.run_actor_actions(serve_idx, serve_second)
+
+    rollout.finish_with_stay()
+    return candidate_from_rollout(
+        rollout.result(),
+        {
+            "cooperative": True,
+            "expert_mode": "two_pot_pipeline",
+            "cook_idx": cook_idx,
+            "serve_idx": serve_idx,
+            "pot_pos": first_pot,
+            "second_pot_pos": second_pot,
+            "server_parking": seed.get("server_parking"),
+            "cook_parking": seed.get("cook_parking"),
+            "prefetch_parking": prefetch_parking,
+            "serve_delay": serve_delay,
+        },
+    )
+
+
+def better_candidate(candidate, best):
+    if best is None:
+        return True
+    candidate_key = (
+        candidate["delivery_count"],
+        candidate["sparse_reward"],
+        candidate.get("speed_score", 0),
+        -candidate["success_steps"][0] if candidate["success_steps"] else -10**9,
+    )
+    best_key = (
+        best["delivery_count"],
+        best["sparse_reward"],
+        best.get("speed_score", 0),
+        -best["success_steps"][0] if best["success_steps"] else -10**9,
+    )
+    return candidate_key > best_key
+
+
+def nearby_parking_candidates(mdp, target_positions, limit=10):
+    candidates = [None]
+    for target_pos in target_positions:
+        candidates.extend(pos for pos, _ in adjacent_targets(mdp, target_pos))
+    candidates.extend(
+        sorted(
+            mdp.get_valid_player_positions(),
+            key=lambda p: min(
+                abs(p[0] - target[0]) + abs(p[1] - target[1])
+                for target in target_positions),
+        )[:limit]
+    )
+    deduped = []
+    for candidate in candidates:
+        if candidate not in deduped:
+            deduped.append(candidate)
+    return deduped
+
+
+def find_single_delivery_seed(env):
     mdp = env.mdp
     parking_options = [None] + list(mdp.get_valid_player_positions())
     failures = []
@@ -382,6 +964,81 @@ def find_demonstration(env):
         raise RuntimeError(
             "Could not find a successful high-level demonstration. "
             f"Observed {len(failures)} planning failures."
+        )
+    return best
+
+
+def find_demonstration(env, demo_horizon, min_deliveries):
+    seed = find_single_delivery_seed(env)
+    if not seed.get("cooperative", False):
+        seed["expert_mode"] = "single_agent"
+        return seed
+
+    candidates = []
+    try:
+        single_pot_candidate = rollout_single_pot_loop(env, seed, demo_horizon)
+        candidates.append(single_pot_candidate)
+    except RuntimeError:
+        pass
+
+    mdp = env.mdp
+    prefetch_parking_candidates = nearby_parking_candidates(
+        mdp,
+        [tuple(seed["pot_pos"])] + list(mdp.terrain_pos_dict["S"]),
+        limit=8,
+    )
+    cook_parking_candidates = nearby_parking_candidates(
+        mdp,
+        [tuple(seed["pot_pos"])] + list(mdp.terrain_pos_dict["S"]),
+        limit=8,
+    )
+    for prefetch_parking in prefetch_parking_candidates:
+        for cook_parking in cook_parking_candidates:
+            try:
+                candidates.append(rollout_prefetch_single_pot_loop(
+                    env,
+                    seed,
+                    demo_horizon,
+                    prefetch_parking=prefetch_parking,
+                    cook_parking=cook_parking,
+                ))
+            except RuntimeError:
+                continue
+
+    if len(mdp.terrain_pos_dict["P"]) > 1:
+        first_pot = tuple(seed["pot_pos"])
+        deduped_parking = nearby_parking_candidates(
+            mdp, mdp.terrain_pos_dict["P"], limit=8)
+        for second_pot in mdp.terrain_pos_dict["P"]:
+            if tuple(second_pot) == first_pot:
+                continue
+            for prefetch_parking in deduped_parking:
+                for serve_delay in (0, 5, 10, 15, 20):
+                    try:
+                        candidates.append(rollout_two_pot_pipeline(
+                            env,
+                            seed,
+                            demo_horizon,
+                            second_pot,
+                            prefetch_parking=prefetch_parking,
+                            serve_delay=serve_delay,
+                        ))
+                    except RuntimeError:
+                        continue
+
+    best = None
+    for candidate in candidates:
+        if better_candidate(candidate, best):
+            best = candidate
+
+    if best is None:
+        raise RuntimeError("Could not build a multi-round plan-BC demonstration")
+    if best["delivery_count"] < min_deliveries:
+        raise RuntimeError(
+            "Plan-BC demonstration did not meet the delivery threshold: "
+            f"{best['delivery_count']} < {min_deliveries}. "
+            f"Best mode={best.get('expert_mode')} "
+            f"sparse={best['sparse_reward']} steps={best['success_steps']}"
         )
     return best
 
@@ -525,6 +1182,8 @@ def main():
     parser.add_argument("--actor-hidden-sizes", default="64,64")
     parser.add_argument("--critic-hidden-sizes", default="128,128")
     parser.add_argument("--eval-episodes", type=int, default=100)
+    parser.add_argument("--demo-horizon", type=int, default=400)
+    parser.add_argument("--min-deliveries", type=int, default=1)
     parser.add_argument("--tensorboard-log")
     parser.add_argument("--tensorboard-name", default="MAPPO_plan_bc")
     parser.add_argument("--ego-save", required=True)
@@ -547,7 +1206,8 @@ def main():
     action_dim = int(env.action_space.n)
     actor_hidden_sizes = parse_hidden_sizes(args.actor_hidden_sizes)
     critic_hidden_sizes = parse_hidden_sizes(args.critic_hidden_sizes)
-    demonstration = find_demonstration(env)
+    demonstration = find_demonstration(
+        env, args.demo_horizon, args.min_deliveries)
     arrays = to_training_arrays(demonstration["records"])
 
     actors = [
@@ -584,13 +1244,26 @@ def main():
         "sparse_reward_mean": stats.sparse_reward_mean,
         "episode_length_mean": stats.episode_length_mean,
         "demo_length": demonstration["length"],
+        "demo_horizon": args.demo_horizon,
+        "min_deliveries": args.min_deliveries,
+        "delivery_count": demonstration.get("delivery_count", 0),
+        "success_steps": demonstration.get("success_steps", []),
+        "first_success_step": demonstration.get("first_success_step"),
+        "mean_delivery_interval": demonstration.get("mean_delivery_interval"),
+        "speed_score": demonstration.get("speed_score"),
         "demo_dense_reward": demonstration["dense_reward"],
         "demo_sparse_reward": demonstration["sparse_reward"],
+        "expert_mode": demonstration.get("expert_mode"),
         "cooperative": demonstration.get("cooperative", False),
         "active_idx": demonstration.get("active_idx"),
         "cook_idx": demonstration.get("cook_idx"),
         "serve_idx": demonstration.get("serve_idx"),
         "pot_pos": list(demonstration["pot_pos"]),
+        "second_pot_pos": (
+            list(demonstration["second_pot_pos"])
+            if demonstration.get("second_pot_pos") is not None
+            else None
+        ),
         "parking_pos": (
             list(demonstration["parking_pos"])
             if demonstration["parking_pos"] is not None
@@ -606,6 +1279,12 @@ def main():
             if demonstration.get("cook_parking") is not None
             else None
         ),
+        "prefetch_parking": (
+            list(demonstration["prefetch_parking"])
+            if demonstration.get("prefetch_parking") is not None
+            else None
+        ),
+        "serve_delay": demonstration.get("serve_delay"),
         "bc_epochs": args.bc_epochs,
         **metrics,
     }
@@ -633,12 +1312,16 @@ def main():
                           stats.sparse_reward_mean, args.bc_epochs)
         writer.add_scalar("eval/success_rate",
                           stats.success_rate, args.bc_epochs)
+        writer.add_scalar("demo/delivery_count",
+                          metadata["delivery_count"], args.bc_epochs)
         writer.close()
 
     env.close()
     print(
         f"Plan-BC {layout_name}: "
         f"demo_len={demonstration['length']} "
+        f"deliveries={demonstration.get('delivery_count', 0)} "
+        f"mode={demonstration.get('expert_mode')} "
         f"acc0={metrics['accuracy0']:.3f} "
         f"acc1={metrics['accuracy1']:.3f} "
         f"dense={stats.dense_reward_mean:.3f} "

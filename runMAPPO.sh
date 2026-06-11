@@ -14,6 +14,8 @@ FINAL_EVAL_EPISODES="${FINAL_EVAL_EPISODES:-100}"
 GIF_FPS="${GIF_FPS:-2}"
 SEED="${SEED:-10}"
 FORCE="${FORCE:-0}"
+PLAN_BC_MIN_DELIVERIES="${PLAN_BC_MIN_DELIVERIES:-1}"
+PLAN_BC_DEMO_HORIZON="${PLAN_BC_DEMO_HORIZON:-400}"
 LAYOUTS="${LAYOUTS:-corridor five_by_five random0 random1 random2 random3 scenario1_s scenario2 scenario2_s scenario3 scenario4 schelling schelling_s small_corridor unident unident_s}"
 
 export MPLCONFIGDIR="${MPLCONFIGDIR:-/data/luoey/tmp/matplotlib}"
@@ -166,6 +168,8 @@ plan_bc_one() {
         --env-config "$(json_config "${layout}")" \
         --seed "${SEED}" \
         --eval-episodes "${FINAL_EVAL_EPISODES}" \
+        --min-deliveries "${PLAN_BC_MIN_DELIVERIES}" \
+        --demo-horizon "${PLAN_BC_DEMO_HORIZON}" \
         --tensorboard-log "${logs_dir}" \
         --tensorboard-name "${tensorboard_name}" \
         --ego-save "${ego_base}-best.pt" \
@@ -284,6 +288,7 @@ case "${1:-help}" in
         echo "  bash runMAPPO.sh warmstart"
         echo "  bash runMAPPO.sh train"
         echo "  LAYOUTS='corridor random3 scenario1_s scenario3 scenario4 small_corridor' bash runMAPPO.sh plan_bc"
+        echo "  PLAN_BC_MIN_DELIVERIES=2 LAYOUTS='corridor random3 scenario1_s scenario3 scenario4 small_corridor' bash runMAPPO.sh plan_bc"
         echo "  TIMESTEPS=20000 EVAL_FREQ=10000 LAYOUTS='unident' bash runMAPPO.sh all"
         echo "  FORCE=1 LAYOUTS='random3 scenario4' bash runMAPPO.sh train"
         ;;
