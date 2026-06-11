@@ -14,6 +14,7 @@ from stable_baselines3.common.callbacks import BaseCallback
 
 from pantheonrl.algos.adap.adap_learn import ADAP
 from pantheonrl.algos.bc import BCShell, reconstruct_policy
+from pantheonrl.algos.mappo import load_mappo_actor
 from pantheonrl.algos.modular.learn import ModularAlgorithm
 from pantheonrl.common.agents import StaticModelAgent, StaticPolicyAgent
 from pantheonrl.common.wrappers import frame_wrap
@@ -54,6 +55,8 @@ def load_policy(policy_type: str, location: str, config: Optional[dict] = None):
         return model.policy
     if policy_type == "BC":
         return BCShell(reconstruct_policy(location)).policy
+    if policy_type == "MAPPO":
+        return load_mappo_actor(location, config.get("device", "cpu"))
     raise ValueError(f"Unsupported policy type: {policy_type}")
 
 
