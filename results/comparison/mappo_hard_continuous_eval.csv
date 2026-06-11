@@ -1,0 +1,13 @@
+algorithm,layout,dense_reward_mean,dense_reward_std,sparse_reward_mean,sparse_reward_std,success_rate,episode_length_mean,episodes,ego_path,partner_path
+PPO,corridor,0.0,0.0,0.0,0.0,0.0,400.0,100,results/PPO/corridor/models/ego-best.zip,results/PPO/corridor/models/alt-best.zip
+PPO,random3,21.0,0.0,0.0,0.0,0.0,400.0,100,results/PPO/random3/models/ego-best.zip,results/PPO/random3/models/alt-best.zip
+PPO,scenario1_s,125.0,0.0,0.0,0.0,0.0,400.0,100,results/PPO/scenario1_s/models/ego-best.zip,results/PPO/scenario1_s/models/alt-best.zip
+PPO,scenario3,9.0,0.0,0.0,0.0,0.0,400.0,100,results/PPO/scenario3/models/ego-best.zip,results/PPO/scenario3/models/alt-best.zip
+PPO,scenario4,34.0,0.0,0.0,0.0,0.0,400.0,100,results/PPO/scenario4/models/ego-best.zip,results/PPO/scenario4/models/alt-best.zip
+PPO,small_corridor,68.0,0.0,0.0,0.0,0.0,400.0,100,results/PPO/small_corridor/models/ego-best.zip,results/PPO/small_corridor/models/alt-best.zip
+MAPPO,corridor,74.0,0.0,40.0,0.0,1.0,400.0,100,results/MAPPO/corridor/models/ego-best.pt,results/MAPPO/corridor/models/alt-best.pt
+MAPPO,random3,151.0,0.0,80.0,0.0,1.0,400.0,100,results/MAPPO/random3/models/ego-best.pt,results/MAPPO/random3/models/alt-best.pt
+MAPPO,scenario1_s,228.0,0.0,120.0,0.0,1.0,400.0,100,results/MAPPO/scenario1_s/models/ego-best.pt,results/MAPPO/scenario1_s/models/alt-best.pt
+MAPPO,scenario3,202.0,0.0,100.0,0.0,1.0,400.0,100,results/MAPPO/scenario3/models/ego-best.pt,results/MAPPO/scenario3/models/alt-best.pt
+MAPPO,scenario4,202.0,0.0,100.0,0.0,1.0,400.0,100,results/MAPPO/scenario4/models/ego-best.pt,results/MAPPO/scenario4/models/alt-best.pt
+MAPPO,small_corridor,111.0,0.0,60.0,0.0,1.0,400.0,100,results/MAPPO/small_corridor/models/ego-best.pt,results/MAPPO/small_corridor/models/alt-best.pt

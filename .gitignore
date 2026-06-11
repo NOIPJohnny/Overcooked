@@ -12,4 +12,3 @@ models/
 .idea/
 .mypy_cache/
 .vscode/
-results/
