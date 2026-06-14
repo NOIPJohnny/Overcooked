@@ -133,6 +133,64 @@ LAYOUTS='random0 scenario2 unident' bash runDQN_improved.sh all
 
 The improved DQN results are stored under `results/DQN_improved/<LAYOUT>/`, and GIFs are stored as `results/gifs/DQN_improved_<LAYOUT>.gif`.
 
+### New Hard Layouts
+
+`run_new_levels.sh` runs the three local hard layouts without modifying the
+`overcooked_ai` submodule. These layouts are registered in `overcookedgym` and
+fall back to the original submodule layouts for all existing names.
+
+```bash
+# Fast validation of custom layouts and MAPPO plan-BC wiring.
+bash run_new_levels.sh smoke
+
+# Train only MAPPO plan-BC on the new layouts.
+bash run_new_levels.sh train_mappo
+
+# Train the basic baselines on the new layouts.
+TIMESTEPS=500000 bash run_new_levels.sh train_baselines
+
+# Render, evaluate, and plot any available new-layout models.
+bash run_new_levels.sh gifs
+bash run_new_levels.sh eval
+bash run_new_levels.sh plots
+```
+
+The default new layouts are `chicane_bottleneck_hard`,
+`asymmetric_corridor_hard`, and `double_pot_maze_hard`. The script evaluates
+only the basic baselines (`PPO`, `DQN`, `A2C`) and `MAPPO`; it does not train or
+compare `DQN_improved`.
+
+New-layout outputs follow the existing result structure:
+
+```text
+results/<ALGO>/<LAYOUT>/models/
+results/gifs/<ALGO>_<LAYOUT>.gif
+results/gifs/<ALGO>_<LAYOUT>.json
+results/comparison/new_levels_eval.csv
+results/comparison/new_levels_eval.json
+results/plots/new_levels/
+```
+
+Current 100-episode evaluation on the new layouts:
+
+| Layout | Basic baselines | MAPPO sparse | MAPPO deliveries |
+| --- | --- | ---: | ---: |
+| `chicane_bottleneck_hard` | PPO/DQN/A2C all 0 success, 0 sparse | 20 | 1 |
+| `asymmetric_corridor_hard` | PPO/DQN/A2C all 0 success, 0 sparse | 40 | 2 |
+| `double_pot_maze_hard` | PPO/DQN/A2C all 0 success, 0 sparse; PPO reaches 34 dense shaping | 40 | 2 |
+
+`results/plots/new_levels/final_sparse_delivery_by_layout.png` shows the
+per-layout sparse reward and estimated delivery count (`sparse / 20`), which is
+more informative than success rate alone on these hard layouts.
+
+Representative visual outputs:
+
+![New-layout sparse reward and estimated deliveries](results/plots/new_levels/final_sparse_delivery_by_layout.png)
+
+![Action distribution on double_pot_maze_hard](results/plots/new_levels/action_distribution_double_pot_maze_hard.png)
+
+![MAPPO rollout on double_pot_maze_hard](results/gifs/MAPPO_double_pot_maze_hard.gif)
+
 ### Direct GIF Rendering
 
 The GIF renderer can also be called directly for any saved model pair:

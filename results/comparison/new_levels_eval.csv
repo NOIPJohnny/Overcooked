@@ -1,0 +1,13 @@
+algorithm,layout,dense_reward_mean,dense_reward_std,sparse_reward_mean,sparse_reward_std,success_rate,episode_length_mean,episodes,ego_path,partner_path
+PPO,chicane_bottleneck_hard,0.0,0.0,0.0,0.0,0.0,400.0,100,results/PPO/chicane_bottleneck_hard/models/ego-best.zip,results/PPO/chicane_bottleneck_hard/models/alt-best.zip
+PPO,asymmetric_corridor_hard,0.0,0.0,0.0,0.0,0.0,400.0,100,results/PPO/asymmetric_corridor_hard/models/ego-best.zip,results/PPO/asymmetric_corridor_hard/models/alt-best.zip
+PPO,double_pot_maze_hard,34.0,0.0,0.0,0.0,0.0,400.0,100,results/PPO/double_pot_maze_hard/models/ego-best.zip,results/PPO/double_pot_maze_hard/models/alt-best.zip
+DQN,chicane_bottleneck_hard,0.0,0.0,0.0,0.0,0.0,400.0,100,results/DQN/chicane_bottleneck_hard/models/ego-best.zip,results/DQN/chicane_bottleneck_hard/models/alt-best.zip
+DQN,asymmetric_corridor_hard,0.0,0.0,0.0,0.0,0.0,400.0,100,results/DQN/asymmetric_corridor_hard/models/ego-best.zip,results/DQN/asymmetric_corridor_hard/models/alt-best.zip
+DQN,double_pot_maze_hard,0.0,0.0,0.0,0.0,0.0,400.0,100,results/DQN/double_pot_maze_hard/models/ego-best.zip,results/DQN/double_pot_maze_hard/models/alt-best.zip
+A2C,chicane_bottleneck_hard,0.0,0.0,0.0,0.0,0.0,400.0,100,results/A2C/chicane_bottleneck_hard/models/ego-best.zip,results/A2C/chicane_bottleneck_hard/models/alt-best.zip
+A2C,asymmetric_corridor_hard,0.0,0.0,0.0,0.0,0.0,400.0,100,results/A2C/asymmetric_corridor_hard/models/ego-best.zip,results/A2C/asymmetric_corridor_hard/models/alt-best.zip
+A2C,double_pot_maze_hard,0.0,0.0,0.0,0.0,0.0,400.0,100,results/A2C/double_pot_maze_hard/models/ego-best.zip,results/A2C/double_pot_maze_hard/models/alt-best.zip
+MAPPO,chicane_bottleneck_hard,34.0,0.0,20.0,0.0,1.0,400.0,100,results/MAPPO/chicane_bottleneck_hard/models/ego-best.pt,results/MAPPO/chicane_bottleneck_hard/models/alt-best.pt
+MAPPO,asymmetric_corridor_hard,91.0,0.0,40.0,0.0,1.0,400.0,100,results/MAPPO/asymmetric_corridor_hard/models/ego-best.pt,results/MAPPO/asymmetric_corridor_hard/models/alt-best.pt
+MAPPO,double_pot_maze_hard,83.0,0.0,40.0,0.0,1.0,400.0,100,results/MAPPO/double_pot_maze_hard/models/ego-best.pt,results/MAPPO/double_pot_maze_hard/models/alt-best.pt

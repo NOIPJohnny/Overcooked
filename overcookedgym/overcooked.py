@@ -5,7 +5,23 @@ from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld
 from overcooked_ai_py.mdp.overcooked_env import OvercookedEnv
 from overcooked_ai_py.planning.planners import MediumLevelPlanner, NO_COUNTERS_PARAMS
 
+from overcookedgym.custom_layouts import CUSTOM_LAYOUTS, custom_layout_params
 from pantheonrl.common.multiagentenv import SimultaneousEnv
+
+
+def build_overcooked_mdp(layout_name, rew_shaping_params):
+    if layout_name not in CUSTOM_LAYOUTS:
+        return OvercookedGridworld.from_layout_name(
+            layout_name=layout_name,
+            rew_shaping_params=rew_shaping_params)
+
+    layout_params = custom_layout_params(layout_name)
+    grid = layout_params.pop("grid")
+    return OvercookedGridworld.from_grid(
+        grid,
+        layout_params,
+        {"rew_shaping_params": rew_shaping_params})
+
 
 class OvercookedMultiEnv(SimultaneousEnv):
     def __init__(self, layout_name, ego_agent_idx=0, baselines=False):
@@ -27,8 +43,11 @@ class OvercookedMultiEnv(SimultaneousEnv):
             "SOUP_DISTANCE_REW": 0,
         }
 
-        self.mdp = OvercookedGridworld.from_layout_name(layout_name=layout_name, rew_shaping_params=rew_shaping_params)
-        mlp = MediumLevelPlanner.from_pickle_or_compute(self.mdp, NO_COUNTERS_PARAMS, force_compute=False)
+        self.mdp = build_overcooked_mdp(layout_name, rew_shaping_params)
+        if layout_name in CUSTOM_LAYOUTS:
+            mlp = MediumLevelPlanner(self.mdp, NO_COUNTERS_PARAMS)
+        else:
+            mlp = MediumLevelPlanner.from_pickle_or_compute(self.mdp, NO_COUNTERS_PARAMS, force_compute=False)
 
         self.base_env = OvercookedEnv(self.mdp, **DEFAULT_ENV_PARAMS)
         self.featurize_fn = lambda x: self.mdp.featurize_state(x, mlp)

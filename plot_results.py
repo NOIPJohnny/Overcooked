@@ -32,6 +32,7 @@ DEFAULT_LAYOUTS = [
 ]
 
 DEFAULT_ALGORITHMS = ["PPO", "DQN", "A2C", "DQN_improved", "MAPPO"]
+DELIVERY_REWARD = 20.0
 
 
 def ensure_dir(path: Path) -> None:
@@ -177,6 +178,56 @@ def plot_final_rewards(
     plt.close(fig)
 
 
+def plot_sparse_delivery_by_layout(
+    results_dir: Path,
+    output_dir: Path,
+    algorithms: List[str],
+    layouts: List[str],
+) -> None:
+    sparse_values = np.full((len(algorithms), len(layouts)), np.nan)
+    for algo_idx, algorithm in enumerate(algorithms):
+        for layout_idx, layout in enumerate(layouts):
+            data = eval_json(results_dir, algorithm, layout)
+            if data is not None:
+                sparse_values[algo_idx, layout_idx] = data.get(
+                    "sparse_reward_mean", np.nan)
+
+    delivery_values = sparse_values / DELIVERY_REWARD
+    fig, axes = plt.subplots(
+        2,
+        1,
+        figsize=(max(10, len(layouts) * 1.4), 7.0),
+        sharex=True,
+    )
+    panels = [
+        (axes[0], sparse_values, "Best eval sparse reward", "sparse_reward"),
+        (axes[1], delivery_values, "Estimated deliveries", "deliveries"),
+    ]
+
+    for ax, values, title, label in panels:
+        finite_values = values[np.isfinite(values)]
+        vmax = float(np.max(finite_values)) if finite_values.size else 1.0
+        vmax = max(vmax, 1.0)
+        image = ax.imshow(values, aspect="auto", vmin=0, vmax=vmax,
+                          cmap="viridis")
+        ax.set_title(title)
+        ax.set_yticks(range(len(algorithms)))
+        ax.set_yticklabels(algorithms)
+        for y in range(len(algorithms)):
+            for x in range(len(layouts)):
+                if np.isfinite(values[y, x]):
+                    text = f"{values[y, x]:.0f}" if label == "sparse_reward" else f"{values[y, x]:.1f}"
+                    ax.text(x, y, text, ha="center", va="center",
+                            color="white", fontsize=8)
+        fig.colorbar(image, ax=ax, label=label)
+
+    axes[-1].set_xticks(range(len(layouts)))
+    axes[-1].set_xticklabels(layouts, rotation=45, ha="right")
+    fig.tight_layout()
+    fig.savefig(output_dir / "final_sparse_delivery_by_layout.png", dpi=180)
+    plt.close(fig)
+
+
 def action_counts(path: Path) -> Optional[Counter]:
     if not path.exists():
         return None
@@ -244,6 +295,8 @@ def main():
     plot_learning_curves(results_dir, output_dir, args.algorithms, args.layouts)
     plot_final_success(results_dir, output_dir, args.algorithms, args.layouts)
     plot_final_rewards(results_dir, output_dir, args.algorithms, args.layouts)
+    plot_sparse_delivery_by_layout(
+        results_dir, output_dir, args.algorithms, args.layouts)
     plot_action_distribution(results_dir, output_dir, args.algorithms, args.layouts)
     print(f"Wrote plots to {output_dir}")
 
